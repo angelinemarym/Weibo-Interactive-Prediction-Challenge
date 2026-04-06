@@ -6,6 +6,7 @@ from collections import defaultdict
 import networkx as nx
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import lightgbm as lgb
 from sklearn.model_selection import train_test_split
 import warnings
@@ -25,6 +26,7 @@ class SocialNetworkEngagementPredictor:
             'like': None
         }
         self.feature_cols = None
+        self.evaluation_metrics = {}
         
     def extract_user_network_features(self, df):
         """
@@ -274,9 +276,27 @@ class SocialNetworkEngagementPredictor:
                     verbose=False
                 )
                 
+                # Calculate validation metrics
+                y_val_pred = model.predict(X_val)
+                y_train_pred = model.predict(X_train)
+                
+                metrics = {
+                    'rmse_train': np.sqrt(mean_squared_error(y_train, y_train_pred)),
+                    'rmse_val': np.sqrt(mean_squared_error(y_val, y_val_pred)),
+                    'mae_train': mean_absolute_error(y_train, y_train_pred),
+                    'mae_val': mean_absolute_error(y_val, y_val_pred),
+                    'r2_train': r2_score(y_train, y_train_pred),
+                    'r2_val': r2_score(y_val, y_val_pred),
+                    'best_iteration': model.best_iteration_
+                }
+                
                 target_key = target.split('_')[0]
                 self.models[target_key] = model
-                print(f"Model trained. Validation RMSE: {model.best_score_['valid_0']['rmse']:.2f}")
+                self.evaluation_metrics[target_key] = metrics
+                
+                print(f"Model trained. Best Iteration: {metrics['best_iteration']}")
+                print(f"  Train - RMSE: {metrics['rmse_train']:.4f}, MAE: {metrics['mae_train']:.4f}, R²: {metrics['r2_train']:.4f}")
+                print(f"  Val   - RMSE: {metrics['rmse_val']:.4f}, MAE: {metrics['mae_val']:.4f}, R²: {metrics['r2_val']:.4f}")
             
             self.feature_cols = feature_cols
             print("\nAll models trained successfully!")
@@ -334,6 +354,162 @@ class SocialNetworkEngagementPredictor:
             submission_str.append(line)
         
         return '\n'.join(submission_str)
+    
+    def calculate_competition_precision(self, predictions_df, actual_df):
+        """
+        Calculate Weibo competition precision metric
+        
+        Based on the official competition metric:
+        - Deviation for each metric: deviation_i = |count_p_i - count_t_i| / (count_t_i + 3)
+        - Individual precision: precision_i = 1 - 0.5*dev_f - 0.25*dev_c - 0.25*dev_l
+        - Overall precision: sum of weighted precision where precision_i > 0.9
+        
+        Args:
+            predictions_df: DataFrame with predicted counts [forward_count, comment_count, like_count]
+            actual_df: DataFrame with actual counts [forward_count, comment_count, like_count]
+        
+        Returns:
+            dict: Contains individual precisions and overall precision
+        """
+        try:
+            # Calculate deviations for each metric
+            eps = 3  # Smoothing constant
+            
+            # Forward deviation
+            deviation_f = np.abs(predictions_df['forward_count'] - actual_df['forward_count']) / (actual_df['forward_count'] + eps)
+            
+            # Comment deviation
+            deviation_c = np.abs(predictions_df['comment_count'] - actual_df['comment_count']) / (actual_df['comment_count'] + eps)
+            
+            # Like deviation
+            deviation_l = np.abs(predictions_df['like_count'] - actual_df['like_count']) / (actual_df['like_count'] + eps)
+            
+            # Individual precision for each sample
+            precision_scores = 1 - (0.5 * deviation_f + 0.25 * deviation_c + 0.25 * deviation_l)
+            
+            # Calculate overall precision with 0.9 threshold
+            total_count = actual_df['forward_count'] + actual_df['comment_count'] + actual_df['like_count']
+            weights = total_count + 1
+            
+            # Sign function: 1 if precision > 0.9, else 0
+            precision_mask = (precision_scores > 0.9).astype(int)
+            
+            # Overall precision
+            overall_precision = (weights * precision_mask).sum() / weights.sum()
+            
+            return {
+                'deviation_forward': deviation_f,
+                'deviation_comment': deviation_c,
+                'deviation_like': deviation_l,
+                'individual_precision': precision_scores,
+                'overall_precision': overall_precision,
+                'precision_above_threshold': precision_mask.sum(),
+                'total_samples': len(predictions_df),
+                'mean_individual_precision': precision_scores.mean(),
+                'median_individual_precision': precision_scores.median()
+            }
+            
+        except Exception as e:
+            print(f"Error calculating competition precision: {str(e)}")
+            return None
+    
+    def save_evaluation_results(self, predictions, output_path='weibo_result_data_v3_metrics.txt', actual_values=None):
+        """
+        Save comprehensive evaluation metrics and results to file
+        
+        Args:
+            predictions: DataFrame with predicted engagement counts
+            output_path: Path to save results
+            actual_values: Optional DataFrame with actual engagement counts for competition precision calculation
+        """
+        try:
+            # Calculate competition precision if actual values provided
+            competition_precision = None
+            if actual_values is not None:
+                competition_precision = self.calculate_competition_precision(predictions, actual_values)
+            
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write("=" * 80 + "\n")
+                f.write("WEIBO ENGAGEMENT PREDICTION - PIPELINE v3 RESULTS\n")
+                f.write("=" * 80 + "\n\n")
+                
+                # Header information
+                f.write(f"Execution Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Number of features: {len(self.feature_cols)}\n")
+                f.write(f"Number of predictions: {len(predictions)}\n\n")
+                
+                # Competition Precision Metric (if available)
+                if competition_precision is not None:
+                    f.write("-" * 80 + "\n")
+                    f.write("COMPETITION PRECISION METRICS (Official Metric)\n")
+                    f.write("-" * 80 + "\n\n")
+                    f.write(f"Overall Precision: {competition_precision['overall_precision']:.6f}\n")
+                    f.write(f"Mean Individual Precision: {competition_precision['mean_individual_precision']:.6f}\n")
+                    f.write(f"Median Individual Precision: {competition_precision['median_individual_precision']:.6f}\n")
+                    f.write(f"Samples with Precision > 0.9: {competition_precision['precision_above_threshold']}/{competition_precision['total_samples']}\n\n")
+                    f.write("Deviations (Mean):\n")
+                    f.write(f"  Forward Deviation:  {competition_precision['deviation_forward'].mean():.6f}\n")
+                    f.write(f"  Comment Deviation:  {competition_precision['deviation_comment'].mean():.6f}\n")
+                    f.write(f"  Like Deviation:     {competition_precision['deviation_like'].mean():.6f}\n\n")
+                
+                # Model evaluation metrics
+                f.write("-" * 80 + "\n")
+                f.write("MODEL EVALUATION METRICS\n")
+                f.write("-" * 80 + "\n\n")
+                
+                for target_key, metrics in self.evaluation_metrics.items():
+                    f.write(f"{target_key.upper()} MODEL METRICS:\n")
+                    f.write(f"  Best Iteration: {metrics.get('best_iteration', 'N/A')}\n")
+                    f.write(f"  Training RMSE:  {metrics['rmse_train']:.6f}\n")
+                    f.write(f"  Validation RMSE: {metrics['rmse_val']:.6f}\n")
+                    f.write(f"  Training MAE:   {metrics['mae_train']:.6f}\n")
+                    f.write(f"  Validation MAE:  {metrics['mae_val']:.6f}\n")
+                    f.write(f"  Training R²:    {metrics['r2_train']:.6f}\n")
+                    f.write(f"  Validation R²:   {metrics['r2_val']:.6f}\n\n")
+                
+                # Prediction statistics
+                f.write("-" * 80 + "\n")
+                f.write("PREDICTION STATISTICS\n")
+                f.write("-" * 80 + "\n\n")
+                
+                for col in ['forward_count', 'comment_count', 'like_count']:
+                    col_short = col.split('_')[0]
+                    f.write(f"{col_short.upper()} COUNT STATISTICS:\n")
+                    f.write(f"  Mean:   {predictions[col].mean():.2f}\n")
+                    f.write(f"  Median: {predictions[col].median():.2f}\n")
+                    f.write(f"  Std:    {predictions[col].std():.2f}\n")
+                    f.write(f"  Min:    {predictions[col].min()}\n")
+                    f.write(f"  Max:    {predictions[col].max()}\n")
+                    f.write(f"  25%:    {predictions[col].quantile(0.25):.0f}\n")
+                    f.write(f"  75%:    {predictions[col].quantile(0.75):.0f}\n\n")
+                
+                # Overall statistics
+                total_engagement = predictions['forward_count'].sum() + \
+                                   predictions['comment_count'].sum() + \
+                                   predictions['like_count'].sum()
+                f.write(f"TOTAL PREDICTED ENGAGEMENT: {int(total_engagement)}\n")
+                f.write(f"  Forwards:  {int(predictions['forward_count'].sum())}\n")
+                f.write(f"  Comments:  {int(predictions['comment_count'].sum())}\n")
+                f.write(f"  Likes:     {int(predictions['like_count'].sum())}\n\n")
+                
+                # Feature information
+                f.write("-" * 80 + "\n")
+                f.write("FEATURE INFORMATION\n")
+                f.write("-" * 80 + "\n\n")
+                f.write(f"Total features used: {len(self.feature_cols)}\n\n")
+                f.write("Feature list:\n")
+                for i, feat in enumerate(self.feature_cols, 1):
+                    f.write(f"  {i}. {feat}\n")
+                
+                f.write("\n" + "=" * 80 + "\n")
+                f.write("END OF REPORT\n")
+                f.write("=" * 80 + "\n")
+            
+            print(f"✓ Evaluation results saved to {output_path}")
+            
+        except Exception as e:
+            print(f"Error saving evaluation results: {str(e)}")
+            raise
 
 class AdvancedNetworkFeatures:
     """
@@ -422,14 +598,14 @@ class AdvancedNetworkFeatures:
         
         # Composite influence score
         user_influence['influence_score'] = (
-            0.4 * (user_influence['total_forwards'] / (user_influence['total_forwards'].max() + 1)) +
-            0.3 * (user_influence['total_comments'] / (user_influence['total_comments'].max() + 1)) +
-            0.3 * (user_influence['total_likes'] / (user_influence['total_likes'].max() + 1))
+            0.5 * (user_influence['total_forwards'] / (user_influence['total_forwards'].max() + 1)) +
+            0.25 * (user_influence['total_comments'] / (user_influence['total_comments'].max() + 1)) +
+            0.25 * (user_influence['total_likes'] / (user_influence['total_likes'].max() + 1))
         )
         
         return user_influence[['uid', 'influence_score']]
 
-def main(train_path=None, predict_path=None, output_path=None):
+def main(train_path=None, predict_path=None, output_path=None, actual_values_path=None):
     """
     Main pipeline execution
     
@@ -437,6 +613,7 @@ def main(train_path=None, predict_path=None, output_path=None):
         train_path: Path to training data (default: Weibo Data/weibo_train_data/weibo_train_data.txt)
         predict_path: Path to prediction data (default: Weibo Data/weibo_predict_data/weibo_predict_data.txt)
         output_path: Output file path (default: weibo_result_data.txt)
+        actual_values_path: Path to actual engagement values for competition precision calculation (optional)
     """
     try:
         # Set default paths
@@ -549,6 +726,26 @@ def main(train_path=None, predict_path=None, output_path=None):
             f.write(submission)
         
         print(f"✓ Predictions saved successfully!")
+        
+        # Save evaluation metrics
+        metrics_output_path = output_path.replace('.txt', '_metrics.txt')
+        
+        # Load actual values if path provided
+        actual_values = None
+        if actual_values_path is not None and os.path.exists(actual_values_path):
+            try:
+                print("\nLoading actual engagement values for competition precision calculation...")
+                actual_columns = ['uid', 'mid', 'time', 'forward_count', 'comment_count', 'like_count', 'content']
+                actual_values = pd.read_csv(actual_values_path, sep='\t', header=None, names=actual_columns)
+                # Keep only predictions that have actual values
+                actual_values = actual_values[actual_values['mid'].isin(predictions['mid'])]
+                actual_values = actual_values[['forward_count', 'comment_count', 'like_count']]
+                print(f"Loaded actual values for {len(actual_values)} posts")
+            except Exception as e:
+                print(f"Warning: Could not load actual values: {str(e)}")
+                actual_values = None
+        
+        predictor.save_evaluation_results(predictions, metrics_output_path, actual_values=actual_values)
         
         return predictions
         

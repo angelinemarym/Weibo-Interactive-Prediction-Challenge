@@ -4,7 +4,7 @@ set -e  # Exit on error
 #SBATCH --job-name=weibo_pipeline_v3
 #SBATCH --output=logs/pipeline_%j.log
 #SBATCH --error=logs/pipeline_%j.err
-#SBATCH --time=02:00:00
+#SBATCH --time=10:00:00
 #SBATCH --mem=32GB
 #SBATCH --cpus-per-task=8
 
