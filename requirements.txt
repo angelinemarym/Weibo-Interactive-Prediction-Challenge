@@ -4,3 +4,4 @@ scipy>=1.7.0
 scikit-learn>=1.0.0
 lightgbm>=3.0.0
 networkx>=2.6
+psutil>=5.8.0
