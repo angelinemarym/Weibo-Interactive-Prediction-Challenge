@@ -1,260 +1,216 @@
-# Weibo Engagement Prediction - Pipeline v3
+# Weibo Engagement Prediction — Pipeline v3
 
 ## Overview
 
-This project implements a machine learning pipeline to predict social media engagement metrics for Weibo posts. It was developed as part of the **Aliyun Tianchi Challenge: Weibo User Post Engagement Prediction**.
+This project predicts Weibo post engagement (forwards, comments, likes) for the
+**Aliyun Tianchi Challenge: Weibo User Post Engagement Prediction**.
 
-**Competition Link:** https://tianchi.aliyun.com/competition/entrance/231574/information
+**Competition link:** https://tianchi.aliyun.com/competition/entrance/231574/information
 
-## Challenge Objective
+---
 
-Predict the number of **forwards, comments, and likes** for Weibo posts based on user profile features, temporal patterns, and content characteristics. The competition focuses on building accurate engagement prediction models using real Weibo social network data.
+## Competition Setup
 
-## Pipeline Architecture
+| Split | Period | Purpose |
+|---|---|---|
+| Training | Feb – Jul 2015 | Learn per-user engagement patterns |
+| Prediction | Aug 2015 | Produce one (F, C, L) triplet per test post |
 
-### Overview
-The v3 pipeline is a comprehensive social network analysis-based approach that combines:
-- User network features (historical statistics, engagement patterns)
-- Temporal features (time of day, day of week, seasonal patterns)
-- Content features (text analysis, TF-IDF, linguistic patterns)
-- Network centrality measures (degree, betweenness, closeness)
-- User influence scoring
+**Evaluation metric — weighted hit rate:**
 
-### Key Components
+```
+precision_i = 1 - 0.5 * |F - tf| / (tf + 5)
+                - 0.25 * |C - tc| / (tc + 3)
+                - 0.25 * |L - tl| / (tl + 3)
 
-#### 1. **SocialNetworkEngagementPredictor** Class
-Main prediction pipeline with the following methods:
+hit_i   = 1  if  precision_i > 0.8
+weight_i = min(tf + tc + tl, 100) + 1
 
-- **`extract_user_network_features()`**: Extracts user-level statistics
-  - Total posts, average engagement metrics
-  - Engagement variance and diversity
-  - Historical posting frequency
-  
-- **`extract_temporal_features()`**: Time-based features
-  - Day of week and weekend indicator
-  - Hour of day and peak hour indicator
-  - Day/month temporal patterns
-  
-- **`extract_content_features()`**: Text and content analysis
-  - Content length and word count
-  - Hashtag, mention, and URL counts
-  - Question and exclamation marks
-  - Emoji presence
-  - TF-IDF vectorization (1000 features)
-  
-- **`extract_engagement_ratio_features()`**: Engagement proportions
-  - Forward/comment/like ratios
-  - Engagement diversity (entropy-based)
-  
-- **`train_models()`**: Trains separate LightGBM models for each metric
-  - One model per engagement type (forward, comment, like)
-  - 80/20 train-validation split
-  - Early stopping with 50-round patience
-  
-- **`predict()`**: Generates predictions for new posts
-
-#### 2. **AdvancedNetworkFeatures** Class
-Social network analysis features:
-
-- **`build_user_interaction_graph()`**: Creates implicit network graph
-  - Nodes: users
-  - Edges: weighted by posting time similarity
-  
-- **`extract_centrality_features()`**: Network centrality measures
-  - Degree centrality
-  - Betweenness centrality
-  - Closeness centrality
-  - Network neighborhood size
-  
-- **`extract_user_influence_score()`**: Composite influence metric
-  - Weighted combination of engagement metrics
-  - Normalized by maximum values
-
-### Model Details
-
-**Algorithm:** LightGBM (Light Gradient Boosting Machine)
-
-**Hyperparameters:**
-```python
-{
-    'objective': 'regression',
-    'metric': 'rmse',
-    'boosting_type': 'gbdt',
-    'num_leaves': 31,
-    'learning_rate': 0.05,
-    'feature_fraction': 0.9,
-    'bagging_fraction': 0.8,
-    'bagging_freq': 5,
-    'n_estimators': 500,
-    'random_state': 42
-}
+score = sum(weight_i * hit_i) / sum(weight_i)
 ```
 
-**Output:** Non-negative integers (predictions clipped to 0 and rounded)
+A prediction is a **hit** when its (F, C, L) triplet is within ~20% of the true
+values on each dimension (with small-count smoothing). High-engagement posts carry
+more weight (capped at 101).
+
+---
+
+## Algorithm
+
+v3 is a **per-user, single-prediction** model. For each user it finds one
+(F, C, L) integer triplet that maximises the weighted hit rate across all of
+that user's historical posts, then applies that same triplet to every test post
+belonging to that user.
+
+### Step 1 — Compute post weights
+
+Each historical post `i` receives a combined weight:
+
+```
+w_recency_i = exp(-days_ago_i * ln2 / HALF_LIFE)          # exponential decay
+w_engage_i  = min(tf+tc+tl, 100) + 1  if days_ago_i <= RECENCY_WINDOW
+            = 1                         otherwise
+
+combined_i  = w_recency_i * w_engage_i
+```
+
+**Why hybrid weighting?**
+Multiplying recency and engagement together gives old high-engagement spikes
+enormous weight (e.g. a 90-day-old post with 100 engagements:
+`exp(-90*ln2/90) * 101 = 0.5 * 101 = 50.5`), causing the model to predict
+inflated counts for users who have since gone quiet. Restricting the engagement
+boost to the last `RECENCY_WINDOW` days prevents this: old posts contribute via
+recency decay only (weight = 1), while recent posts benefit from both signals.
+
+Parameters:
+- `HALF_LIFE = 90.0` days — recency decay half-life
+- `RECENCY_WINDOW = 30.0` days — window for full engagement weighting
+
+### Step 2 — Build candidate pools
+
+For each of the three dimensions (F, C, L), a small set of up to 8 integer
+candidates is built from the user's history:
+
+```
+candidates = {0} ∪ {weighted_mean} ∪ {p25, p50, p75, p90}
+```
+
+- `0` is included because the majority of posts have zero engagement.
+- The weighted mean uses `combined_i` as weights.
+- Percentiles are unweighted (capture the shape of the raw distribution).
+
+### Step 3 — Vectorised grid search
+
+All combinations of the three candidate pools are scored in a single NumPy
+matrix operation (up to 8³ = 512 triplets):
+
+```python
+# (n_cands, 1) broadcast against (1, n_posts)
+dev_f = |F - fwd| / (fwd + 5)
+dev_c = |C - cmt| / (cmt + 3)
+dev_l = |L - lke| / (lke + 3)
+
+prec  = clip(1 - 0.5*dev_f - 0.25*dev_c - 0.25*dev_l, 0, ∞)
+hit   = (prec > 0.8)
+score = sum(combined_w * hit, axis=posts) / sum(combined_w)
+```
+
+The triplet with the highest score is selected as `(F0, C0, L0)`.
+
+### Step 4 — Local refinement (±1)
+
+The grid search is limited to the discrete candidate pool. The true optimum may
+be an adjacent integer not in the pool — especially near the precision = 0.8
+boundary where a ±1 shift can flip a miss to a hit.
+
+After the grid search, all 27 neighbours are evaluated:
+
+```
+for dF in {-1, 0, +1}:
+  for dC in {-1, 0, +1}:
+    for dL in {-1, 0, +1}:
+      score (max(0, F0+dF), max(0, C0+dC), max(0, L0+dL))
+```
+
+The best-scoring triplet (grid or neighbour) is kept.
+
+---
+
+## CV Results
+
+| Version | Change | CV score (pre-Jul→Jul) |
+|---|---|---|
+| v1 | Simple per-user heuristic, no recency weighting | 0.3004 |
+| v2 | Recency decay (hl=30), percentile candidates, vectorised scoring | 0.3065 |
+| v2 → v3 base | Hybrid engagement weighting (hl=90, rot=30) | 0.3093 |
+| **v3** | + local refinement (±1) | **0.3112** |
+
+Oracle ceiling (true July median per user): **0.3490**
+
+---
 
 ## Data Format
 
-### Training Data (7 columns)
+### Training data — tab-separated, 7 columns
 ```
-uid | mid | time | forward_count | comment_count | like_count | content
-```
-
-### Prediction Data (4 columns)
-```
-uid | mid | time | content
+uid  mid  time  forward_count  comment_count  like_count  content
 ```
 
-### Output Format
+### Prediction data — tab-separated, 4 columns
 ```
-uid\tmid\tforward_count,comment_count,like_count
+uid  mid  time  content
 ```
+
+### Output — tab-separated
+```
+uid  mid  forward_count,comment_count,like_count
+```
+
+---
 
 ## Quick Start
 
-### 1. Install Dependencies
+### Install dependencies
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Run Locally
+### Run
 ```bash
 python weibo_pipeline_v3.py
 ```
 
-### 3. Run on HPC (SLURM)
+Output is written to `Weibo Data/weibo_result_data/weibo_result_data_v3.txt`.
+
+### Run on HPC (SLURM)
 ```bash
 chmod +x run_pipeline.sh
 sbatch run_pipeline.sh
 ```
 
-Check status:
-```bash
-squeue -u $USER
-tail -f logs/pipeline_*.log
-```
+---
+
+## Key Parameters
+
+| Parameter | Value | Effect |
+|---|---|---|
+| `HALF_LIFE` | 90 days | Recency decay — posts from 90 days ago get half the weight of today's posts |
+| `RECENCY_WINDOW` | 30 days | Posts older than this contribute recency weight only (engagement weight = 1) |
+| `MAX_CANDS` | 8 | Maximum candidates per dimension in grid search |
+
+---
 
 ## File Structure
 
 ```
 weibo-baseline/
-├── weibo_pipeline_v3.py          # Main pipeline (production-ready)
-├── weibo_pipeline_v2.py          # Previous version
-├── weibo_pipeline.py             # Initial version
-├── run_pipeline.sh               # SLURM batch script (CPU)
+├── weibo_pipeline_v3.py          # Current production pipeline
+├── run_pipeline.sh               # SLURM batch script
 ├── requirements.txt              # Python dependencies
-├── check_columns.py              # Data inspection utility
-├── HPC_README.md                 # HPC submission guide
 ├── README.md                     # This file
 └── Weibo Data/
     ├── weibo_train_data/
-    │   └── weibo_train_data.txt  # Training dataset (1.2M rows)
+    │   └── weibo_train_data.txt  # Training dataset (~1.2M rows)
     ├── weibo_predict_data/
-    │   └── weibo_predict_data.txt # Test dataset (177K rows)
+    │   └── weibo_predict_data.txt # Test dataset (~177K rows)
     └── weibo_result_data/
-        ├── weibo_result_data_v3.txt    # v3 predictions
-        ├── weibo_result_data_v2.txt    # v2 predictions
-        └── weibo_result_data.txt       # v1 predictions
+        └── weibo_result_data_v3.txt  # v3 predictions
 ```
+
+---
 
 ## Requirements
 
 - Python 3.7+
-- pandas >= 1.3.0
 - numpy >= 1.21.0
-- scikit-learn >= 1.0.0
-- lightgbm >= 3.0.0
-- networkx >= 2.6
+- pandas >= 1.3.0
 
-All requirements are in `requirements.txt`
-
-## Performance
-
-### Feature Count
-- User network features: ~10
-- Temporal features: ~8
-- Content features: ~1020 (including TF-IDF)
-- Engagement ratio features: ~4
-- Network centrality features: ~4
-- **Total: ~1046 features**
-
-### Training Time
-Typical runtime on 8 CPUs with 32GB RAM: ~15-30 minutes
-
-## Customization
-
-### Modify File Paths
-```python
-from weibo_pipeline_v3 import main
-
-predictions = main(
-    train_path='custom/path/train.txt',
-    predict_path='custom/path/predict.txt',
-    output_path='custom/output.txt'
-)
-```
-
-### Adjust LightGBM Parameters
-Edit in `train_models()` method:
-```python
-lgb_params = {
-    'learning_rate': 0.05,  # Reduce for better generalization
-    'num_leaves': 63,       # Increase for more complexity
-    'n_estimators': 1000,   # More iterations
-    # ... other parameters
-}
-```
-
-### Enable/Disable Features
-Modify feature extraction calls in `prepare_features()`:
-```python
-# Comment out to disable specific features
-train_temporal = self.extract_temporal_features(train_df)
-train_content = self.extract_content_features(train_df)
-# ... etc
-```
-
-## Error Handling
-
-The pipeline includes comprehensive error handling:
-- ✓ File existence validation
-- ✓ Column validation with helpful error messages
-- ✓ Type conversion with error coercion
-- ✓ NaN/missing value handling
-- ✓ Feature dimension mismatch detection
-- ✓ Graceful degradation for missing features
-
-## Debugging
-
-Enable verbose output by checking `logs/debug.log` after HPC submission:
-
-```bash
-cat logs/debug.log
-tail -f logs/pipeline_*.log
-```
-
-## Future Improvements
-
-- [ ] Cross-validation for better model evaluation
-- [ ] Hyperparameter tuning (grid/random search)
-- [ ] Feature importance analysis
-- [ ] Ensemble methods (stacking multiple models)
-- [ ] Deep learning approaches (LSTM for temporal patterns)
-- [ ] Advanced NLP (BERT embeddings for content)
-- [ ] Sentiment analysis components
-- [ ] User follower graph integration
-
-## References
-
-The pipeline architecture is based on Social Network Analysis (SNA) literature:
-- Centrality measures for influence prediction [23, 27]
-- Temporal patterns in social media [32, 34, 37]
-- Content virality factors [1, 6, 11]
-- Engagement ratio analysis [varies]
+---
 
 ## Author
 
-Developed for Aliyun Tianchi Weibo Challenge
+Developed for the Aliyun Tianchi Weibo Challenge.
 
 ## License
 
-Competition project - refer to competition terms and conditions
+Competition project — refer to competition terms and conditions.

@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-weibo_pipeline_v8.py
+weibo_pipeline_v1.py
 
-Improvements over v7:
   1. Recency-weighted objective (exponential decay, half-life = 30 days)
      — recent posts are far more predictive; v7 treats all history equally
   2. Joint recency × engagement weighting matching the official metric
@@ -20,7 +19,7 @@ import pandas as pd
 
 TRAIN_PATH   = 'Weibo Data/weibo_train_data/weibo_train_data.txt'
 PREDICT_PATH = 'Weibo Data/weibo_predict_data/weibo_predict_data.txt'
-RESULT_PATH  = 'Weibo Data/weibo_result_data/weibo_result_data_v9.txt'
+RESULT_PATH  = 'Weibo Data/weibo_result_data/weibo_result_data_v1.txt'
 
 HALF_LIFE    = 30.0   # days for exponential recency decay
 MAX_CANDS    = 8      # max candidate values per target dimension
