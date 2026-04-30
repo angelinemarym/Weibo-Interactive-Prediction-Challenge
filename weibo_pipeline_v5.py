@@ -1,31 +1,28 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-weibo_pipeline_v4.py
+weibo_pipeline_v5.py
 
-Improvement over v9: TF-IDF weighted bigram similarity (per-user IDF).
+Improvement over v4: stronger ALPHA + p10 candidate.
 
-Problem with v9 (plain Jaccard):
-  Weibo posts are short (~100 chars → ~98 bigrams each).  Two posts on
-  completely different topics still share many common bigrams
-  (punctuation, numbers, common words like "的/了/我").  Plain Jaccard
-  similarity is dominated by these stop-bigrams and carries little
-  topical signal → weight ≈ 1.0 for nearly all post pairs → zero effect.
+Changes from v4:
+  ALPHA: 3.0 → 5.0  (stronger TF-IDF content weighting)
+  Candidates: add p10 to {0, p25, p50, p75, p90, weighted_mean}
+              → {0, p10, p25, p50, p75, p90, weighted_mean}
 
-Solution: TF-IDF weighted cosine similarity.
-  For each user, compute IDF over their OWN training posts:
-      idf(bg) = log(N / df(bg))   where df(bg) = # training posts containing bg.
-  A bigram shared by ALL training posts (common filler) gets idf≈0.
-  A bigram shared by only 1-2 training posts (topical) gets high idf.
+Rationale for ALPHA increase:
+  v10 (ALPHA=3) improved over v3 by content-weighting.  The signal is
+  meaningful; amplifying it may further concentrate weight on topically
+  similar training posts.
 
-  Similarity between prediction post p and training post t:
-      sim(p, t) = dot(tfidf(p), tfidf(t)) / (||tfidf(p)|| * ||tfidf(t)||)
+Rationale for p10 candidate:
+  Current candidates cover the upper distribution well (p25..p90).
+  Adding p10 gives a lower anchor, which may improve prediction accuracy
+  for users whose posts cluster at low engagement values.
 
-  Content weight: w_content(p, t) = 1 + ALPHA * sim(p, t)
-
-Everything else is identical to v3:
-  hl=90d, rw=30d, unweighted-percentile candidates {0,wm,p25,p50,p75,p90},
-  single ±1 refinement.
+Everything else is identical to v10:
+  hl=90d, rw=30d, days_ago relative to max training date, single ±1 refinement,
+  per-user TF-IDF bigram cosine similarity, per-post prediction.
 """
 import os
 import time
@@ -36,12 +33,12 @@ from collections import defaultdict
 
 TRAIN_PATH     = 'Weibo Data/weibo_train_data/weibo_train_data.txt'
 PREDICT_PATH   = 'Weibo Data/weibo_predict_data/weibo_predict_data.txt'
-RESULT_PATH    = 'Weibo Data/weibo_result_data/weibo_result_data_v4.txt'
+RESULT_PATH    = 'Weibo Data/weibo_result_data/weibo_result_data_v5.txt'
 
 HALF_LIFE      = 90.0
 RECENCY_WINDOW = 30.0
 MAX_CANDS      = 8
-ALPHA          = 3.0   # content similarity multiplier
+ALPHA          = 5.0   # content similarity multiplier (increased from 3.0)
 
 
 # =============================================================================
@@ -70,18 +67,10 @@ def to_bigrams(text):
 
 
 def build_tfidf_vecs(contents):
-    """
-    Build TF-IDF vectors for a list of post contents within ONE user.
-
-    Returns:
-      vecs : list of dict {bigram: tfidf_weight}
-      norms: list of L2 norms (for cosine normalisation)
-    """
     n = len(contents)
     if n == 0:
-        return [], []
+        return [], [], {}
 
-    # Term frequencies per post
     tf_list = []
     df = defaultdict(int)
     for text in contents:
@@ -93,10 +82,8 @@ def build_tfidf_vecs(contents):
         for bg in tf:
             df[bg] += 1
 
-    # IDF: log(N / df); bigrams appearing in all posts get idf=0
     idf = {bg: math.log(n / cnt) for bg, cnt in df.items() if cnt < n}
 
-    # TF-IDF vectors and their L2 norms
     vecs, norms = [], []
     for tf in tf_list:
         vec = {}
@@ -111,7 +98,6 @@ def build_tfidf_vecs(contents):
 
 
 def cosine_sim(pred_vec, pred_norm, train_vec, train_norm):
-    """Cosine similarity between two TF-IDF vectors (as dicts)."""
     if pred_norm == 0 or train_norm == 0:
         return 0.0
     dot = sum(pred_vec.get(bg, 0.0) * w for bg, w in train_vec.items())
@@ -119,7 +105,6 @@ def cosine_sim(pred_vec, pred_norm, train_vec, train_norm):
 
 
 def pred_tfidf_vec(text, idf):
-    """Build TF-IDF vector for a prediction post using per-user IDF."""
     bgs = to_bigrams(text)
     tf = defaultdict(int)
     for bg in bgs:
@@ -130,13 +115,13 @@ def pred_tfidf_vec(text, idf):
 
 
 # =============================================================================
-# Candidate generation + scoring (same as v3)
+# Candidate generation + scoring
 # =============================================================================
 
 def build_candidates(vals, weights):
     raw = {0}
     raw.add(int(round(float(np.average(vals, weights=weights)))))
-    for p in (25, 50, 75, 90):
+    for p in (10, 25, 50, 75, 90):   # added p10 vs v10
         raw.add(int(round(float(np.percentile(vals, p)))))
     return np.array(sorted(v for v in raw if v >= 0)[:MAX_CANDS], dtype=np.float64)
 
@@ -207,14 +192,13 @@ def main():
 
     print(f"Train rows  : {len(train)}")
     print(f"Predict rows: {len(pred)}")
-    print(f"Config: hl={HALF_LIFE}d  rw={RECENCY_WINDOW}d  ALPHA={ALPHA}  tfidf-bigram")
+    print(f"Config: hl={HALF_LIFE}d  rw={RECENCY_WINDOW}d  ALPHA={ALPHA}  tfidf-bigram  p10-added")
 
-    # Group predictions by uid
     pred_by_uid = {}
     for row in pred.itertuples(index=False):
         pred_by_uid.setdefault(row.uid, []).append(row)
 
-    predictions = {}   # (uid, mid) -> (F, C, L)
+    predictions = {}
     groups  = list(train.groupby('uid'))
     n_users = len(groups)
 
@@ -228,14 +212,11 @@ def main():
         lke      = grp['like_count'].values
         contents = grp['content'].tolist()
 
-        # Build per-user TF-IDF vectors for training posts
         train_vecs, train_norms, idf = build_tfidf_vecs(contents)
 
         for pred_row in pred_by_uid[uid]:
-            # TF-IDF vector for this specific prediction post
             pv, pn = pred_tfidf_vec(pred_row.content, idf)
 
-            # Content similarity weight for each training post
             w_cont = np.array(
                 [1.0 + ALPHA * cosine_sim(pv, pn, tv, tn)
                  for tv, tn in zip(train_vecs, train_norms)],

@@ -12,7 +12,7 @@ set -e  # Exit on error
 mkdir -p logs
 
 # Immediate output to file for debugging
-exec 1>logs/debug.log 2>&1
+exec 1>logs/debug1.log 2>&1
 
 echo "============================================"
 echo "SLURM Job Started"
@@ -34,9 +34,9 @@ python -c "import pandas; print(pandas.__version__)"
 
 # Run the pipeline
 echo "============================================"
-echo "Running Weibo Pipeline v3..."
+echo "Running Weibo Pipeline v5..."
 echo "============================================"
-python weibo_pipeline_v3.py
+python weibo_pipeline_v5.py
 
 # Check exit status
 if [ $? -eq 0 ]; then
