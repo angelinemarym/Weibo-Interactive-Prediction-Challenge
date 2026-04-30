@@ -1,4 +1,4 @@
-# Weibo Engagement Prediction — Pipeline v3
+# Weibo Engagement Prediction — Pipeline v13
 
 ## Overview
 
@@ -37,12 +37,32 @@ more weight (capped at 101).
 
 ## Algorithm
 
-v3 is a **per-user, single-prediction** model. For each user it finds one
+v13 is a **per-user, per-post** model. For each prediction post it finds the
 (F, C, L) integer triplet that maximises the weighted hit rate across all of
-that user's historical posts, then applies that same triplet to every test post
-belonging to that user.
+that user's historical posts, using content similarity to the prediction post
+as an additional weight signal.
 
-### Step 1 — Compute post weights
+### Step 1 — Compute per-post content weights (TF-IDF bigram cosine)
+
+For each user, a per-user IDF is built over all training post contents:
+
+```
+idf(bg) = log(N / df(bg))    for bigrams appearing in fewer than N posts
+         (bigrams in ALL posts get idf=0, filtering out common filler)
+```
+
+For each prediction post `p`, cosine similarity against each training post `t`:
+
+```
+sim(p, t) = dot(tfidf(p), tfidf(t)) / (||tfidf(p)|| * ||tfidf(t)||)
+
+w_content(p, t) = 1 + ALPHA * sim(p, t)     ALPHA = 8.0
+```
+
+This up-weights training posts that are topically similar to the prediction post,
+so the model predicts engagement patterns from the most relevant past posts.
+
+### Step 2 — Compute combined post weights
 
 Each historical post `i` receives a combined weight:
 
@@ -51,35 +71,33 @@ w_recency_i = exp(-days_ago_i * ln2 / HALF_LIFE)          # exponential decay
 w_engage_i  = min(tf+tc+tl, 100) + 1  if days_ago_i <= RECENCY_WINDOW
             = 1                         otherwise
 
-combined_i  = w_recency_i * w_engage_i
+combined_i  = w_recency_i * w_engage_i * w_content_i
 ```
 
 **Why hybrid weighting?**
-Multiplying recency and engagement together gives old high-engagement spikes
-enormous weight (e.g. a 90-day-old post with 100 engagements:
-`exp(-90*ln2/90) * 101 = 0.5 * 101 = 50.5`), causing the model to predict
-inflated counts for users who have since gone quiet. Restricting the engagement
-boost to the last `RECENCY_WINDOW` days prevents this: old posts contribute via
-recency decay only (weight = 1), while recent posts benefit from both signals.
+Multiplying recency and engagement gives old high-engagement spikes enormous weight.
+Restricting the engagement boost to the last `RECENCY_WINDOW` days prevents this.
 
 Parameters:
 - `HALF_LIFE = 90.0` days — recency decay half-life
 - `RECENCY_WINDOW = 30.0` days — window for full engagement weighting
+- `ALPHA = 8.0` — TF-IDF content similarity multiplier
 
-### Step 2 — Build candidate pools
+### Step 3 — Build candidate pools
 
 For each of the three dimensions (F, C, L), a small set of up to 8 integer
 candidates is built from the user's history:
 
 ```
-candidates = {0} ∪ {weighted_mean} ∪ {p25, p50, p75, p90}
+candidates = {0} ∪ {weighted_mean} ∪ {p5, p10, p25, p50, p75, p90}
 ```
 
 - `0` is included because the majority of posts have zero engagement.
 - The weighted mean uses `combined_i` as weights.
 - Percentiles are unweighted (capture the shape of the raw distribution).
+- `p5` and `p10` provide low-end anchors for users with mostly low-engagement posts.
 
-### Step 3 — Vectorised grid search
+### Step 4 — Vectorised grid search
 
 All combinations of the three candidate pools are scored in a single NumPy
 matrix operation (up to 8³ = 512 triplets):
@@ -97,11 +115,7 @@ score = sum(combined_w * hit, axis=posts) / sum(combined_w)
 
 The triplet with the highest score is selected as `(F0, C0, L0)`.
 
-### Step 4 — Local refinement (±1)
-
-The grid search is limited to the discrete candidate pool. The true optimum may
-be an adjacent integer not in the pool — especially near the precision = 0.8
-boundary where a ±1 shift can flip a miss to a hit.
+### Step 5 — Local refinement (±1)
 
 After the grid search, all 27 neighbours are evaluated:
 
@@ -116,16 +130,24 @@ The best-scoring triplet (grid or neighbour) is kept.
 
 ---
 
-## CV Results
+## Competition Score History
 
-| Version | Change | CV score (pre-Jul→Jul) |
+| Version | Competition score | Key change |
 |---|---|---|
-| v1 | Simple per-user heuristic, no recency weighting | 0.3004 |
-| v2 | Recency decay (hl=30), percentile candidates, vectorised scoring | 0.3065 |
-| v2 → v3 base | Hybrid engagement weighting (hl=90, rot=30) | 0.3093 |
-| **v3** | + local refinement (±1) | **0.3112** |
-
-Oracle ceiling (true July median per user): **0.3490**
+| v3 | 0.3127 | Baseline: recency×engagement weights, grid search, ±1 refinement |
+| v4 | 0.3090 | Weighted percentiles, ±2 refinement, more candidates (hurt) |
+| v5 | 0.3115 | Iterative hill climbing (overfits, hurt) |
+| v6 | 0.3098 | Exact sweep-line coordinate descent (overfits, hurt) |
+| v7 | 0.3080 | hl=180, rw=7 from CV sweep (CV misleading, worst) |
+| v8 | 0.3093 | Added p95, p99 candidates (hurt) |
+| v9 | 0.3126 | Per-post bigram Jaccard similarity (no signal, neutral) |
+| v10 | 0.3139 | TF-IDF bigram cosine similarity, ALPHA=3 (first improvement) |
+| v11 | 0.3102 | + temporal features, pred-relative days_ago (hurt) |
+| v12 | 0.3144 | ALPHA=5, added p10 candidate |
+| **v13** | **0.3147** | **ALPHA=8, added p5 candidate (best)** |
+| v14 | 0.3144 | Bigram+trigram (trigrams too sparse for short posts, hurt) |
+| v15 | 0.3144 | ALPHA=12 (over-concentrates weight, peaked at 8) |
+| v16 | 0.3146 | Sublinear TF log(1+tf) (marginal, bigrams short enough) |
 
 ---
 
@@ -157,10 +179,10 @@ pip install -r requirements.txt
 
 ### Run
 ```bash
-python weibo_pipeline_v3.py
+python weibo_pipeline_v13.py
 ```
 
-Output is written to `Weibo Data/weibo_result_data/weibo_result_data_v3.txt`.
+Output is written to `Weibo Data/weibo_result_data/weibo_result_data_v13.txt`.
 
 ### Run on HPC (SLURM)
 ```bash
@@ -174,9 +196,10 @@ sbatch run_pipeline.sh
 
 | Parameter | Value | Effect |
 |---|---|---|
-| `HALF_LIFE` | 90 days | Recency decay — posts from 90 days ago get half the weight of today's posts |
-| `RECENCY_WINDOW` | 30 days | Posts older than this contribute recency weight only (engagement weight = 1) |
+| `HALF_LIFE` | 90 days | Recency decay — posts from 90 days ago get half the weight |
+| `RECENCY_WINDOW` | 30 days | Posts older than this contribute recency weight only |
 | `MAX_CANDS` | 8 | Maximum candidates per dimension in grid search |
+| `ALPHA` | 8.0 | TF-IDF content similarity multiplier |
 
 ---
 
@@ -184,7 +207,8 @@ sbatch run_pipeline.sh
 
 ```
 weibo-baseline/
-├── weibo_pipeline_v3.py          # Current production pipeline
+├── weibo_pipeline_v6.py         # Current production pipeline (score 0.3147)
+├── weibo_pipeline_v3.py          # Baseline pipeline (score 0.3127)
 ├── run_pipeline.sh               # SLURM batch script
 ├── requirements.txt              # Python dependencies
 ├── README.md                     # This file
@@ -194,7 +218,7 @@ weibo-baseline/
     ├── weibo_predict_data/
     │   └── weibo_predict_data.txt # Test dataset (~177K rows)
     └── weibo_result_data/
-        └── weibo_result_data_v3.txt  # v3 predictions
+        └── weibo_result_data_v13.txt  # v13 predictions (best)
 ```
 
 ---
