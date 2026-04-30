@@ -37,6 +37,8 @@ more weight (capped at 101).
 
 ## Algorithm
 
+![Pipeline Framework](image/framework.jpg)
+
 v13 is a **per-user, per-post** model. For each prediction post it finds the
 (F, C, L) integer triplet that maximises the weighted hit rate across all of
 that user's historical posts, using content similarity to the prediction post
