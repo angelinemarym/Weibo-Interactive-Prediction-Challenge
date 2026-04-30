@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e  # Exit on error
 
-#SBATCH --job-name=weibo_pipeline_v3
+#SBATCH --job-name=weibo_pipeline_v6
 #SBATCH --output=logs/pipeline_%j.log
 #SBATCH --error=logs/pipeline_%j.err
 #SBATCH --time=10:00:00
@@ -34,9 +34,9 @@ python -c "import pandas; print(pandas.__version__)"
 
 # Run the pipeline
 echo "============================================"
-echo "Running Weibo Pipeline v5..."
+echo "Running Weibo Pipeline v6..."
 echo "============================================"
-python weibo_pipeline_v5.py
+python weibo_pipeline_v6.py
 
 # Check exit status
 if [ $? -eq 0 ]; then
