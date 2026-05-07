@@ -1,4 +1,4 @@
-# Weibo Engagement Prediction — Pipeline v8
+# Weibo Engagement Prediction — Pipeline v12
 
 ## Overview
 
@@ -23,7 +23,7 @@ precision_i = 1 - 0.5 * |F - tf| / (tf + 5)
                 - 0.25 * |C - tc| / (tc + 3)
                 - 0.25 * |L - tl| / (tl + 3)
 
-hit_i   = 1  if  precision_i > 0.8
+hit_i    = 1  if  precision_i > 0.8
 weight_i = min(tf + tc + tl, 100) + 1
 
 score = sum(weight_i * hit_i) / sum(weight_i)
@@ -39,14 +39,15 @@ more weight (capped at 101).
 
 ![Pipeline Framework](image/framework.jpg)
 
-v8 is a **per-user, per-post** model. For each prediction post it finds the
+v12 is a **per-user, per-post** model. For each prediction post it finds the
 (F, C, L) integer triplet that maximises the weighted hit rate across all of
 that user's historical posts, using content similarity to the prediction post
 as an additional weight signal.
 
 ### Step 1 — Compute per-post content weights (TF-IDF bigram cosine)
 
-For each user, a per-user IDF is built over all training post contents:
+`@mention` tokens are stripped before indexing. For each user, a per-user IDF
+is built over all training post contents:
 
 ```
 idf(bg) = log(N / df(bg))    for bigrams appearing in fewer than N posts
@@ -58,7 +59,7 @@ For each prediction post `p`, cosine similarity against each training post `t`:
 ```
 sim(p, t) = dot(tfidf(p), tfidf(t)) / (||tfidf(p)|| * ||tfidf(t)||)
 
-w_content(p, t) = 1 + ALPHA * sim(p, t)     ALPHA = 12.0
+w_content(p, t) = 1 + ALPHA * sim(p, t)     ALPHA = 50.0
 ```
 
 This up-weights training posts that are topically similar to the prediction post,
@@ -80,8 +81,8 @@ boost is restricted to the last `RECENCY_WINDOW` days to avoid old high-engageme
 spikes dominating.
 
 Parameters:
-- `RECENCY_WINDOW = 30.0` days — window for full engagement weighting
-- `ALPHA = 12.0` — TF-IDF content similarity multiplier
+- `RECENCY_WINDOW = 35.0` days — window for full engagement weighting
+- `ALPHA = 50.0` — TF-IDF content similarity multiplier
 
 ### Step 3 — Build candidate pools
 
@@ -126,7 +127,7 @@ for dF in {-2, -1, 0, +1, +2}:
       score (max(0, F0+dF), max(0, C0+dC), max(0, L0+dL))
 ```
 
-The best-scoring triplet (grid or neighbour) is kept. Expanded from ±1 (v7) to ±2 (v8).
+The best-scoring triplet (grid or neighbour) is kept.
 
 ---
 
@@ -147,56 +148,127 @@ The best-scoring triplet (grid or neighbour) is kept. Expanded from ±1 (v7) to 
 | v13 | 0.3147 | ALPHA=8, added p5 candidate |
 | v14 | 0.3144 | Bigram+trigram (trigrams too sparse for short posts, hurt) |
 | v15 | 0.3144 | ALPHA=12 (over-concentrates weight with decay, peaked at 8) |
-| v16 | 0.3146 | Sublinear TF log(1+tf) (marginal, bigrams short enough) |
-| v7* | 0.3149 | ALPHA=12 + no recency decay (ablation-guided) |
-| **v8*** | **0.3157** | **±2 local refinement (ablation-guided, best)** |
-
-*v7/v8 in the pipeline file naming correspond to the post-v16 ablation-guided versions.
+| v16 | 0.3146 | Sublinear TF log(1+tf) (marginal) |
+| pipeline_v7 | 0.3149 | ALPHA=12 + no recency decay (ablation-guided) |
+| pipeline_v8 | 0.3157 | ±2 local refinement (ablation-guided) |
+| pipeline_v9 | 0.3157 | Strip @mentions before TF-IDF (+0.0002 val, neutral test) |
+| pipeline_v10 | 0.3136 | Log-space candidate generation (hurt) |
+| pipeline_v11 | 0.3162 | ALPHA=30, rw=45d |
+| **pipeline_v12** | **0.3192** | **ALPHA=50, rw=35d ← current best** |
 
 ---
 
 ## Ablation Study Results
 
-Three rounds of ablation on a Jun-2015 held-out split (3,000 sampled users):
+Ablation validation uses a **Jul 2015 held-out split** (3,000 sampled users,
+train on Feb–Jun 2015). This mirrors the actual submission scenario (predict Aug 2015)
+more accurately than the earlier Jun 2015 split used in rounds 1–4.
 
-### Round 1 — v13 baseline components
+### Table 3 — Model construction components (v12 baseline)
 
-| Component removed | Val score | Δ |
+| Model construction | Val score | Δ |
+|---|---|---|
+| **Baseline (full model)** | **0.3805** | **—** |
+| No content (α=0) | 0.3669 | −0.0136 |
+| No engagement boost (Δ=0) | 0.3656 | −0.0148 |
+| No ±2 local refinement | 0.3712 | −0.0092 |
+
+All three components contribute significantly. Content similarity and engagement
+boost are the largest single contributors; removing either costs ~0.014.
+
+### Sweep 5 — ALPHA and recency window (v9 baseline, Jul split)
+
+| Variant | Val score | Δ |
+|---|---|---|
+| v9 baseline (A=12, rw=30) | 0.3689 | — |
+| ALPHA=16 | 0.3717 | +0.0027 |
+| ALPHA=20 | 0.3733 | +0.0043 |
+| ALPHA=30 | 0.3738 | +0.0048 |
+| rw=45d | 0.3721 | +0.0032 |
+| rw=14d | 0.3620 | −0.0069 |
+| topk=100 | 0.3671 | −0.0018 |
+| topk=50 | 0.3608 | −0.0082 |
+
+### Sweep 6 — ALPHA ceiling (v11 baseline, Jul split)
+
+| Variant | Val score | Δ |
+|---|---|---|
+| v11 baseline (A=30, rw=45) | 0.3708 | — |
+| ALPHA=50 | 0.3721 | +0.0013 |
+| ALPHA=75 | 0.3721 | +0.0013 |
+| ALPHA=100 | 0.3705 | −0.0003 |
+| rw=35d | 0.3801 | **+0.0093** |
+| rw=40d | 0.3727 | +0.0019 |
+
+### Sweep 7 — rw floor + ALPHA×rw combos (v11 baseline, Jul split)
+
+| Variant | Val score | Δ |
+|---|---|---|
+| v11 baseline (A=30, rw=45) | 0.3708 | — |
+| rw=35d | 0.3801 | +0.0093 |
+| rw=30d | 0.3738 | +0.0030 |
+| rw=20d | 0.3698 | −0.0010 |
+| **ALPHA=50 + rw=35d** | **0.3805** | **+0.0096** |
+| ALPHA=75 + rw=35d | 0.3780 | +0.0072 |
+
+### Sweep 8 — Fine-grained ALPHA×rw (v12 baseline, Jul split)
+
+| Variant | Val score | Δ |
+|---|---|---|
+| **v12 baseline (A=50, rw=35)** | **0.3805** | **—** |
+| ALPHA=55 | 0.3797 | −0.0007 |
+| ALPHA=60 | 0.3790 | −0.0014 |
+| rw=34d | 0.3793 | −0.0011 |
+| rw=36d | 0.3776 | −0.0028 |
+| rw=30d | 0.3766 | −0.0038 |
+
+ALPHA=50 + rw=35d is confirmed as the global optimum on this axis — all
+neighbouring values are worse.
+
+### Earlier sweeps (Jun 2015 split — less representative of test)
+
+<details>
+<summary>Sweep 1–4 results (Jun split baseline)</summary>
+
+**Sweep 1 — v13 baseline components**
+
+| Component | Val score | Δ |
 |---|---|---|
 | v13 baseline (ALPHA=8, decay, rw=30) | 0.3606 | — |
 | No recency window | 0.3471 | −0.0136 |
-| Flat weights (no recency at all) | 0.3462 | −0.0144 |
 | No content (ALPHA=0) | 0.3544 | −0.0063 |
 | No ±1 local refinement | 0.3579 | −0.0028 |
-| **No recency decay** | **0.3660** | **+0.0054** |
-| **ALPHA=12** | **0.3646** | **+0.0039** |
+| No recency decay | 0.3660 | +0.0054 |
+| ALPHA=12 | 0.3646 | +0.0039 |
 
-### Round 2 — ALPHA and RECENCY_WINDOW sweep (v7 baseline)
+**Sweep 2 — ALPHA and rw sweep (v7 baseline)**
 
 | Variant | Val score | Δ |
 |---|---|---|
 | v7 baseline (ALPHA=12, no decay, rw=30) | 0.3678 | — |
 | ALPHA=8 | 0.3660 | −0.0018 |
-| ALPHA=16 | 0.3674 | −0.0004 |
-| ALPHA=20 | 0.3675 | −0.0003 |
 | rw=7d | 0.3522 | −0.0156 |
-| rw=60d | 0.3567 | −0.0112 |
-| **±2 local refinement** | **0.3680** | **+0.0002** |
+| ±2 local refinement | 0.3680 | +0.0002 |
 
-### Round 3 — v8 baseline components
+**Sweep 3 — Refinement and candidates (v8 baseline)**
 
 | Variant | Val score | Δ |
 |---|---|---|
 | v8 baseline (ALPHA=12, no decay, rw=30, ±2) | 0.3680 | — |
-| ±1 refinement | 0.3678 | −0.0002 |
 | ±3 refinement | 0.3649 | −0.0031 |
-| top-k=50 (similarity filtering) | 0.3622 | −0.0058 |
-| top-k=20 | 0.3523 | −0.0157 |
+| topk=50 | 0.3622 | −0.0058 |
 | Weighted percentiles | 0.3536 | −0.0144 |
-| Add p1+p2+p3 (MAX=11) | 0.3680 | ±0 |
-| Engagement cap=50 | 0.3620 | −0.0061 |
 
-All remaining levers show no improvement — v8 parameters appear near-optimal.
+**Sweep 4 — Content preprocessing (v8 baseline)**
+
+| Variant | Val score | Δ |
+|---|---|---|
+| v8 baseline (no preprocessing) | 0.3680 | — |
+| Strip @mentions | 0.3682 | +0.0002 |
+| Strip URLs | 0.3665 | −0.0015 |
+| Strip #hashtags# entirely | 0.3670 | −0.0010 |
+
+</details>
 
 ---
 
@@ -228,26 +300,25 @@ pip install -r requirements.txt
 
 ### Run
 ```bash
-python weibo_pipeline_v8.py
+python weibo_pipeline_v12.py
 ```
 
-Output is written to `Weibo Data/weibo_result_data/weibo_result_data_v8.txt`.
+Output is written to `Weibo Data/weibo_result_data/weibo_result_data_v12.txt`.
 
-### Run on HPC (SLURM)
+### Run ablation study
 ```bash
-chmod +x run_pipeline.sh
-sbatch run_pipeline.sh
+python weibo_ablation.py
 ```
 
 ---
 
-## Key Parameters
+## Key Parameters (v12)
 
 | Parameter | Value | Effect |
 |---|---|---|
-| `RECENCY_WINDOW` | 30 days | Posts within this window get full engagement weighting |
+| `RECENCY_WINDOW` | 35 days | Posts within this window get full engagement weighting |
 | `MAX_CANDS` | 8 | Maximum candidates per dimension in grid search |
-| `ALPHA` | 12.0 | TF-IDF content similarity multiplier |
+| `ALPHA` | 50.0 | TF-IDF content similarity multiplier |
 | Local refinement | ±2 | Neighbourhood search radius after grid search |
 
 ---
@@ -256,24 +327,29 @@ sbatch run_pipeline.sh
 
 ```
 weibo-baseline/
-├── weibo_pipeline_v8.py          # Current best pipeline (score 0.3157)
-├── weibo_pipeline_v7.py          # Previous best (score 0.3149)
-├── weibo_pipeline_v6.py          # v13 equivalent (score 0.3147)
-├── weibo_pipeline_v3.py          # Original baseline (score 0.3127)
-├── weibo_ablation.py             # Ablation study script
-├── ablation_results.txt          # Round 1 ablation results
-├── ablation_results_sweep2.txt   # Round 2 ablation results
-├── ablation_results_sweep3.txt   # Round 3 ablation results
-├── run_pipeline.sh               # SLURM batch script
+├── weibo_pipeline_v12.py         # Current best pipeline (score 0.3192)
+├── weibo_pipeline_v11.py         # ALPHA=30, rw=45 (score 0.3162)
+├── weibo_pipeline_v9.py          # ALPHA=12, rw=30, strip @mentions (score 0.3157)
+├── weibo_ablation.py             # Ablation study script (Jul 2015 val split)
+├── ablation_results_table3.txt   # Table 3 ablation (v12 baseline)
+├── ablation_results_sweep8.txt   # Fine-grained ALPHA×rw sweep
+├── ablation_results_sweep7.txt   # rw floor + ALPHA×rw combos
+├── ablation_results_sweep6.txt   # ALPHA ceiling search
+├── ablation_results_sweep5.txt   # ALPHA and rw (Jul split)
+├── ablation_results_sweep4.txt   # Content preprocessing (Jun split)
+├── ablation_results_sweep3.txt   # Refinement and candidates (Jun split)
+├── ablation_results_sweep2.txt   # ALPHA and rw (Jun split)
+├── ablation_results.txt          # Round 1 components (Jun split)
+├── run_pipeline2.sh              # Batch script
 ├── requirements.txt              # Python dependencies
 ├── README.md                     # This file
 └── Weibo Data/
     ├── weibo_train_data/
-    │   └── weibo_train_data.txt  # Training dataset (~1.2M rows)
+    │   └── weibo_train_data.txt   # Training dataset (~1.2M rows, Feb–Jul 2015)
     ├── weibo_predict_data/
-    │   └── weibo_predict_data.txt # Test dataset (~177K rows)
+    │   └── weibo_predict_data.txt # Test dataset (~177K rows, Aug 2015)
     └── weibo_result_data/
-        └── weibo_result_data_v8.txt  # v8 predictions (best)
+        └── weibo_result_data_v12.txt  # v12 predictions (best)
 ```
 
 ---
