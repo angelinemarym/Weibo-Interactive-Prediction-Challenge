@@ -1,0 +1,40 @@
+Loading data …
+Train: 1,040,874 rows  |  Val: 29,944 rows  (3,000 users)
+
+  500/3000 users  [226s]
+  1000/3000 users  [378s]
+  1500/3000 users  [470s]
+  2000/3000 users  [527s]
+  2500/3000 users  [565s]
+  3000/3000 users  [588s]
+
+Done in 589s
+
+Ablation sweep 8 ? ALPHA fine-tune + rw ?5d (v12 baseline)  (3000 sampled users)
+Total time: 589s
+
+======================================================
+Variant                          Val score       delta
+------------------------------------------------------
+v12 baseline (A=50, rw=35, ?2)      0.3805     +0.0000  <- baseline
+ALPHA=55                            0.3797     -0.0007
+ALPHA=60                            0.3790     -0.0014
+ALPHA=65                            0.3779     -0.0025
+ALPHA=70                            0.3781     -0.0023
+ALPHA=75                            0.3780     -0.0025
+ALPHA=80                            0.3752     -0.0052
+rw=30d                              0.3766     -0.0038
+rw=32d                              0.3766     -0.0039
+rw=33d                              0.3787     -0.0018
+rw=34d                              0.3793     -0.0011
+rw=36d                              0.3776     -0.0028
+rw=37d                              0.3760     -0.0045
+rw=40d                              0.3752     -0.0053
+ALPHA=60 + rw=33d                   0.3762     -0.0043
+ALPHA=60 + rw=34d                   0.3769     -0.0036
+ALPHA=60 + rw=36d                   0.3770     -0.0035
+ALPHA=70 + rw=33d                   0.3758     -0.0047
+ALPHA=70 + rw=35d                   0.3781     -0.0023
+======================================================
+
+Results saved to ablation_results_sweep8.txt

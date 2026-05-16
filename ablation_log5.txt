@@ -1,0 +1,39 @@
+Loading data …
+Train: 1,040,874 rows  |  Val: 29,944 rows  (3,000 users)
+
+  500/3000 users  [211s]
+  1000/3000 users  [347s]
+  1500/3000 users  [429s]
+  2000/3000 users  [479s]
+  2500/3000 users  [511s]
+  3000/3000 users  [531s]
+
+Done in 533s
+
+Ablation sweep 5 ? Jul 2015 val split (v9 baseline)  (3000 sampled users)
+Total time: 533s
+
+======================================================================
+Variant                                          Val score       delta
+----------------------------------------------------------------------
+v9 baseline (strip @mentions, A=12, rw=30, ?2)      0.3689     +0.0000  <- baseline
+ALPHA=8                                             0.3690     +0.0001
+ALPHA=16                                            0.3717     +0.0027
+ALPHA=20                                            0.3733     +0.0043
+ALPHA=30                                            0.3738     +0.0048
+topk=10                                             0.3427     -0.0262
+topk=20                                             0.3559     -0.0131
+topk=50                                             0.3608     -0.0082
+topk=100                                            0.3671     -0.0018
+rw=14d                                              0.3620     -0.0069
+rw=45d                                              0.3721     +0.0032
+rw=60d                                              0.3680     -0.0009
+?1 refinement                                       0.3714     +0.0025
+?3 refinement                                       0.3710     +0.0021
+no refinement                                       0.3653     -0.0036
+weighted percentiles                                0.3626     -0.0064
+no zero candidate                                   0.3687     -0.0002
+add p1+p2+p3 (max=11)                               0.3689     +0.0000
+======================================================================
+
+Results saved to ablation_results_sweep5.txt

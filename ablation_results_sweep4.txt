@@ -1,0 +1,17 @@
+Ablation sweep 4 — content preprocessing (v8 baseline)  (val split: Jun 2015, 3000 sampled users)
+Total time: 457s
+
+=============================================================
+Variant                                 Val score       delta
+-------------------------------------------------------------
+v8 baseline (no preprocessing)             0.3680     +0.0000  <- baseline
+strip URLs                                 0.3665     -0.0015
+strip @mentions                            0.3682     +0.0002
+strip # delimiters (keep text)             0.3679     -0.0001
+strip #hashtags# entirely                  0.3670     -0.0010
+strip URLs + @mentions                     0.3674     -0.0007
+strip URLs + # delimiters                  0.3665     -0.0015
+strip URLs + #hashtags# entirely           0.3659     -0.0021
+strip URLs + @mentions + # delimiters      0.3674     -0.0006
+strip URLs + @mentions + #hashtags#        0.3674     -0.0007
+=============================================================

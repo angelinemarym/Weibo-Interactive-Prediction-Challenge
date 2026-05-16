@@ -1,0 +1,9 @@
+Train rows  : 1225088
+Predict rows: 177923
+Config: no-recency-decay  rw=35.0d  ALPHA=50.0  tfidf-bigram  p5+p10  +-2-refinement  strip-mentions
+  15000/37251 users  [999s]
+  20000/37251 users  [4020s]
+  25000/37251 users  [4191s]
+Predictions: 174331. Elapsed: 4957s
+Saved 177923 predictions to Weibo Data/weibo_result_data/weibo_result_data_v12.txt
+Total time: 4958s

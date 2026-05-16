@@ -1,0 +1,11 @@
+Table 3 ablation — model construction (v12 baseline, Jul 2015 val)  (3000 sampled users)
+Total time: 132s
+
+=====================================================
+Variant                         Val score       delta
+-----------------------------------------------------
+Baseline (full model)              0.3805     +0.0000  <- baseline
+No content (alpha=0)               0.3669     -0.0136
+No engagement boost (Delta=0)      0.3656     -0.0148
+No ±2 local refinement             0.3712     -0.0092
+=====================================================

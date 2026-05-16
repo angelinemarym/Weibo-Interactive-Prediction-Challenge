@@ -1,0 +1,25 @@
+Loading data …
+Train: 1,040,874 rows  |  Val: 29,944 rows  (3,000 users)
+
+  500/3000 users  [52s]
+  1000/3000 users  [84s]
+  1500/3000 users  [104s]
+  2000/3000 users  [116s]
+  2500/3000 users  [125s]
+  3000/3000 users  [131s]
+
+Done in 132s
+
+Table 3 ablation ? model construction (v12 baseline, Jul 2015 val)  (3000 sampled users)
+Total time: 132s
+
+=====================================================
+Variant                         Val score       delta
+-----------------------------------------------------
+Baseline (full model)              0.3805     +0.0000  <- baseline
+No content (alpha=0)               0.3669     -0.0136
+No engagement boost (Delta=0)      0.3656     -0.0148
+No ?2 local refinement             0.3712     -0.0092
+=====================================================
+
+Results saved to ablation_results_table3.txt
