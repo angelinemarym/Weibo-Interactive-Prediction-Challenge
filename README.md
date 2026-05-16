@@ -327,19 +327,7 @@ python weibo_ablation.py
 
 ```
 weibo-baseline/
-├── weibo_pipeline_v12.py         # Current best pipeline (score 0.3192)
-├── weibo_pipeline_v11.py         # ALPHA=30, rw=45 (score 0.3162)
-├── weibo_pipeline_v9.py          # ALPHA=12, rw=30, strip @mentions (score 0.3157)
-├── weibo_ablation.py             # Ablation study script (Jul 2015 val split)
-├── ablation_results_table3.txt   # Table 3 ablation (v12 baseline)
-├── ablation_results_sweep8.txt   # Fine-grained ALPHA×rw sweep
-├── ablation_results_sweep7.txt   # rw floor + ALPHA×rw combos
-├── ablation_results_sweep6.txt   # ALPHA ceiling search
-├── ablation_results_sweep5.txt   # ALPHA and rw (Jul split)
-├── ablation_results_sweep4.txt   # Content preprocessing (Jun split)
-├── ablation_results_sweep3.txt   # Refinement and candidates (Jun split)
-├── ablation_results_sweep2.txt   # ALPHA and rw (Jun split)
-├── ablation_results.txt          # Round 1 components (Jun split)
+├── weibo_pipeline.py             # Current best pipeline (score 0.3192)
 ├── run_pipeline2.sh              # Batch script
 ├── requirements.txt              # Python dependencies
 ├── README.md                     # This file

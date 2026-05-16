@@ -1,44 +1,20 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-weibo_pipeline_v5.py
-
-Improvement over v4: stronger ALPHA + p10 candidate.
-
-Changes from v4:
-  ALPHA: 3.0 → 5.0  (stronger TF-IDF content weighting)
-  Candidates: add p10 to {0, p25, p50, p75, p90, weighted_mean}
-              → {0, p10, p25, p50, p75, p90, weighted_mean}
-
-Rationale for ALPHA increase:
-  v10 (ALPHA=3) improved over v3 by content-weighting.  The signal is
-  meaningful; amplifying it may further concentrate weight on topically
-  similar training posts.
-
-Rationale for p10 candidate:
-  Current candidates cover the upper distribution well (p25..p90).
-  Adding p10 gives a lower anchor, which may improve prediction accuracy
-  for users whose posts cluster at low engagement values.
-
-Everything else is identical to v10:
-  hl=90d, rw=30d, days_ago relative to max training date, single ±1 refinement,
-  per-user TF-IDF bigram cosine similarity, per-post prediction.
-"""
 import os
+import re
 import time
 import math
 import numpy as np
 import pandas as pd
 from collections import defaultdict
 
+_RE_MENTION = re.compile(r'@\S+')
+
 TRAIN_PATH     = 'Weibo Data/weibo_train_data/weibo_train_data.txt'
 PREDICT_PATH   = 'Weibo Data/weibo_predict_data/weibo_predict_data.txt'
-RESULT_PATH    = 'Weibo Data/weibo_result_data/weibo_result_data_v5.txt'
+RESULT_PATH    = 'Weibo Data/weibo_result_data/weibo_result_data.txt'
 
-HALF_LIFE      = 90.0
-RECENCY_WINDOW = 30.0
+RECENCY_WINDOW = 35.0
 MAX_CANDS      = 8
-ALPHA          = 5.0   # content similarity multiplier (increased from 3.0)
+ALPHA          = 50.0
 
 
 # =============================================================================
@@ -61,8 +37,12 @@ def load_data():
 # Per-user TF-IDF bigram similarity
 # =============================================================================
 
+def strip_mentions(text):
+    return _RE_MENTION.sub('', str(text))
+
+
 def to_bigrams(text):
-    s = str(text)
+    s = strip_mentions(text)
     return [s[i:i+2] for i in range(len(s) - 1)]
 
 
@@ -121,7 +101,7 @@ def pred_tfidf_vec(text, idf):
 def build_candidates(vals, weights):
     raw = {0}
     raw.add(int(round(float(np.average(vals, weights=weights)))))
-    for p in (10, 25, 50, 75, 90):   # added p10 vs v10
+    for p in (5, 10, 25, 50, 75, 90):   # p5 added vs v12
         raw.add(int(round(float(np.percentile(vals, p)))))
     return np.array(sorted(v for v in raw if v >= 0)[:MAX_CANDS], dtype=np.float64)
 
@@ -140,10 +120,9 @@ def best_triplet(fwd, cmt, lke, days_ago, w_content):
     cmt = cmt.astype(np.float64)
     lke = lke.astype(np.float64)
 
-    w_rec    = np.exp(-days_ago * np.log(2.0) / HALF_LIFE)
     full_eng = np.minimum(fwd + cmt + lke, 100.0) + 1.0
     eng_w    = np.where(days_ago <= RECENCY_WINDOW, full_eng, 1.0)
-    comb_w   = w_rec * eng_w * w_content
+    comb_w   = eng_w * w_content  # no recency decay
     total_w  = comb_w.sum()
 
     fwd2 = fwd[np.newaxis, :]
@@ -164,7 +143,7 @@ def best_triplet(fwd, cmt, lke, days_ago, w_content):
     F0, C0, L0 = int(gf.ravel()[best_i]), int(gc.ravel()[best_i]), int(gl.ravel()[best_i])
     best_score = grid_scores[best_i]
 
-    deltas = (-1, 0, 1)
+    deltas = (-2, -1, 0, 1, 2)
     nb_F = np.array([max(0, F0+dF) for dF in deltas for dC in deltas for dL in deltas],
                     dtype=np.float64)[:, np.newaxis]
     nb_C = np.array([max(0, C0+dC) for dF in deltas for dC in deltas for dL in deltas],
@@ -192,7 +171,7 @@ def main():
 
     print(f"Train rows  : {len(train)}")
     print(f"Predict rows: {len(pred)}")
-    print(f"Config: hl={HALF_LIFE}d  rw={RECENCY_WINDOW}d  ALPHA={ALPHA}  tfidf-bigram  p10-added")
+    print(f"Config: no-recency-decay  rw={RECENCY_WINDOW}d  ALPHA={ALPHA}  tfidf-bigram  p5+p10  +-2-refinement  strip-mentions")
 
     pred_by_uid = {}
     for row in pred.itertuples(index=False):
